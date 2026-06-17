@@ -1,0 +1,32 @@
+# --- Never commit malware samples or anything derived from them ---
+data/samples/
+*.bin
+*.exe
+*.elf
+*.dll
+*.so
+*.sample
+
+# Trained artifacts / extracted features (regenerable, often large)
+ml/model.pkl
+data/features.npy
+data/label_array.npy
+
+# Generated docs images are committed deliberately in Phase 8, so not ignored.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

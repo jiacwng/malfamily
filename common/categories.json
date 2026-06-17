@@ -1,0 +1,53 @@
+{
+  "_meta": {
+    "description": "Mnemonic-root categories for malfamily. A 'root' is an x86/x86-64 instruction stem with size suffixes and condition codes stripped (e.g. jne/je/jz -> 'j', setne/setz -> 'set', paddb/paddw/paddd -> 'padd'). The mapping from a concrete mnemonic to its root is performed in core/extractor.py; this file only declares the canonical root vocabulary grouped by semantic category.",
+    "version": 1,
+    "arch": ["x86", "x86-64"]
+  },
+  "control_flow": [
+    "j", "jmp", "call", "ret", "loop", "loope", "loopne", "jcxz", "jecxz"
+  ],
+  "arithmetic": [
+    "add", "adc", "sub", "sbb", "mul", "imul", "div", "idiv",
+    "inc", "dec", "neg", "cmp", "lea", "xadd"
+  ],
+  "logical": [
+    "and", "or", "xor", "not", "shl", "shr", "sar", "sal",
+    "rol", "ror", "rcl", "rcr", "test", "bt", "bts", "btr",
+    "btc", "bsf", "bsr", "shld", "shrd"
+  ],
+  "data_movement": [
+    "mov", "movzx", "movsx", "movsxd", "cmov", "xchg", "bswap",
+    "cbw", "cwde", "cdqe", "cwd", "cdq", "cqo", "set"
+  ],
+  "string_ops": [
+    "movs", "cmps", "scas", "lods", "stos", "rep", "repe", "repne", "ins", "outs"
+  ],
+  "stack_ops": [
+    "push", "pop", "pusha", "popa", "pushf", "popf", "pushad", "popad", "enter", "leave"
+  ],
+  "crypto_extensions": [
+    "aesenc", "aesenclast", "aesdec", "aesdeclast", "aesimc", "aeskeygenassist",
+    "pclmulqdq", "sha1rnds4", "sha1nexte", "sha1msg1", "sha1msg2",
+    "sha256rnds2", "sha256msg1", "sha256msg2", "crc32", "rdrand", "rdseed"
+  ],
+  "simd": [
+    "movaps", "movups", "movdqa", "movdqu", "movd", "movq",
+    "padd", "psub", "pmul", "pand", "por", "pxor", "pcmp", "pshuf",
+    "punpck", "pack", "pmovmskb", "vmov", "vpxor", "vpadd",
+    "addps", "mulps", "subps", "divps", "ptest"
+  ],
+  "system": [
+    "int", "syscall", "sysenter", "sysexit", "sysret", "cpuid",
+    "rdtsc", "rdtscp", "rdmsr", "wrmsr", "in", "out", "hlt",
+    "cli", "sti", "lgdt", "lidt", "ltr", "lldt", "invlpg",
+    "wbinvd", "clflush", "lfence", "mfence", "sfence",
+    "xgetbv", "xsetbv", "swapgs", "nop", "ud2"
+  ],
+  "floating_point": [
+    "fld", "fst", "fstp", "fadd", "fsub", "fmul", "fdiv", "fcom",
+    "fcomp", "fucom", "fild", "fist", "fistp", "fxch", "fabs",
+    "fchs", "fsqrt", "fsin", "fcos", "fptan", "fldz", "fld1",
+    "fldpi", "fnstsw", "fnstcw", "fldcw", "fwait", "fninit", "fxam", "frndint"
+  ]
+}
