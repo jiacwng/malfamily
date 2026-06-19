@@ -1,53 +1,105 @@
 {
   "_meta": {
-    "description": "Mnemonic-root categories for malfamily. A 'root' is an x86/x86-64 instruction stem with size suffixes and condition codes stripped (e.g. jne/je/jz -> 'j', setne/setz -> 'set', paddb/paddw/paddd -> 'padd'). The mapping from a concrete mnemonic to its root is performed in core/extractor.py; this file only declares the canonical root vocabulary grouped by semantic category.",
-    "version": 1,
-    "arch": ["x86", "x86-64"]
+    "description": "Per-architecture mnemonic-root categories for malfamily. A 'root' is an instruction stem with size/sign/condition suffixes stripped (x86: jne/je/jz -> 'j', paddb/w/d -> 'padd'; arm64: b.eq/b.ne -> 'b.cond', ldrb/ldrh/ldrsw -> 'ldr', crc32b/w/x -> 'crc32'). Concrete mnemonic -> root mapping is done in core/extractor.py; this file only declares the canonical root vocabulary per architecture. Models are trained per-architecture because x86 and arm64 share no mnemonics.",
+    "version": 2,
+    "architectures": ["x86", "arm64"]
   },
-  "control_flow": [
-    "j", "jmp", "call", "ret", "loop", "loope", "loopne", "jcxz", "jecxz"
-  ],
-  "arithmetic": [
-    "add", "adc", "sub", "sbb", "mul", "imul", "div", "idiv",
-    "inc", "dec", "neg", "cmp", "lea", "xadd"
-  ],
-  "logical": [
-    "and", "or", "xor", "not", "shl", "shr", "sar", "sal",
-    "rol", "ror", "rcl", "rcr", "test", "bt", "bts", "btr",
-    "btc", "bsf", "bsr", "shld", "shrd"
-  ],
-  "data_movement": [
-    "mov", "movzx", "movsx", "movsxd", "cmov", "xchg", "bswap",
-    "cbw", "cwde", "cdqe", "cwd", "cdq", "cqo", "set"
-  ],
-  "string_ops": [
-    "movs", "cmps", "scas", "lods", "stos", "rep", "repe", "repne", "ins", "outs"
-  ],
-  "stack_ops": [
-    "push", "pop", "pusha", "popa", "pushf", "popf", "pushad", "popad", "enter", "leave"
-  ],
-  "crypto_extensions": [
-    "aesenc", "aesenclast", "aesdec", "aesdeclast", "aesimc", "aeskeygenassist",
-    "pclmulqdq", "sha1rnds4", "sha1nexte", "sha1msg1", "sha1msg2",
-    "sha256rnds2", "sha256msg1", "sha256msg2", "crc32", "rdrand", "rdseed"
-  ],
-  "simd": [
-    "movaps", "movups", "movdqa", "movdqu", "movd", "movq",
-    "padd", "psub", "pmul", "pand", "por", "pxor", "pcmp", "pshuf",
-    "punpck", "pack", "pmovmskb", "vmov", "vpxor", "vpadd",
-    "addps", "mulps", "subps", "divps", "ptest"
-  ],
-  "system": [
-    "int", "syscall", "sysenter", "sysexit", "sysret", "cpuid",
-    "rdtsc", "rdtscp", "rdmsr", "wrmsr", "in", "out", "hlt",
-    "cli", "sti", "lgdt", "lidt", "ltr", "lldt", "invlpg",
-    "wbinvd", "clflush", "lfence", "mfence", "sfence",
-    "xgetbv", "xsetbv", "swapgs", "nop", "ud2"
-  ],
-  "floating_point": [
-    "fld", "fst", "fstp", "fadd", "fsub", "fmul", "fdiv", "fcom",
-    "fcomp", "fucom", "fild", "fist", "fistp", "fxch", "fabs",
-    "fchs", "fsqrt", "fsin", "fcos", "fptan", "fldz", "fld1",
-    "fldpi", "fnstsw", "fnstcw", "fldcw", "fwait", "fninit", "fxam", "frndint"
-  ]
+
+  "x86": {
+    "control_flow": [
+      "j", "jmp", "call", "ret", "loop", "loope", "loopne", "jcxz", "jecxz"
+    ],
+    "arithmetic": [
+      "add", "adc", "sub", "sbb", "mul", "imul", "div", "idiv",
+      "inc", "dec", "neg", "cmp", "lea", "xadd"
+    ],
+    "logical": [
+      "and", "or", "xor", "not", "shl", "shr", "sar", "sal",
+      "rol", "ror", "rcl", "rcr", "test", "bt", "bts", "btr",
+      "btc", "bsf", "bsr", "shld", "shrd"
+    ],
+    "data_movement": [
+      "mov", "movzx", "movsx", "movsxd", "cmov", "xchg", "bswap",
+      "cbw", "cwde", "cdqe", "cwd", "cdq", "cqo", "set"
+    ],
+    "string_ops": [
+      "movs", "cmps", "scas", "lods", "stos", "rep", "repe", "repne", "ins", "outs"
+    ],
+    "stack_ops": [
+      "push", "pop", "pusha", "popa", "pushf", "popf", "pushad", "popad", "enter", "leave"
+    ],
+    "crypto_extensions": [
+      "aesenc", "aesenclast", "aesdec", "aesdeclast", "aesimc", "aeskeygenassist",
+      "pclmulqdq", "sha1rnds4", "sha1nexte", "sha1msg1", "sha1msg2",
+      "sha256rnds2", "sha256msg1", "sha256msg2", "crc32", "rdrand", "rdseed"
+    ],
+    "simd": [
+      "movaps", "movups", "movdqa", "movdqu", "movd", "movq",
+      "padd", "psub", "pmul", "pand", "por", "pxor", "pcmp", "pshuf",
+      "punpck", "pack", "pmovmskb", "vmov", "vpxor", "vpadd",
+      "addps", "mulps", "subps", "divps", "ptest"
+    ],
+    "system": [
+      "int", "syscall", "sysenter", "sysexit", "sysret", "cpuid",
+      "rdtsc", "rdtscp", "rdmsr", "wrmsr", "in", "out", "hlt",
+      "cli", "sti", "lgdt", "lidt", "ltr", "lldt", "invlpg",
+      "wbinvd", "clflush", "lfence", "mfence", "sfence",
+      "xgetbv", "xsetbv", "swapgs", "nop", "ud2"
+    ],
+    "floating_point": [
+      "fld", "fst", "fstp", "fadd", "fsub", "fmul", "fdiv", "fcom",
+      "fcomp", "fucom", "fild", "fist", "fistp", "fxch", "fabs",
+      "fchs", "fsqrt", "fsin", "fcos", "fptan", "fldz", "fld1",
+      "fldpi", "fnstsw", "fnstcw", "fldcw", "fwait", "fninit", "fxam", "frndint"
+    ]
+  },
+
+  "arm64": {
+    "control_flow": [
+      "b", "b.cond", "bl", "blr", "br", "ret", "cbz", "cbnz", "tbz", "tbnz"
+    ],
+    "arithmetic": [
+      "add", "adc", "sub", "sbc", "neg", "ngc", "mul", "madd", "msub",
+      "mneg", "smull", "umull", "smulh", "umulh", "sdiv", "udiv",
+      "cmp", "cmn", "adr", "adrp"
+    ],
+    "logical": [
+      "and", "orr", "eor", "orn", "eon", "bic", "mvn", "lsl", "lsr",
+      "asr", "ror", "tst", "bfm", "sbfm", "ubfm", "bfi", "bfxil",
+      "sbfx", "ubfx", "extr", "clz", "cls", "rbit", "rev"
+    ],
+    "data_movement": [
+      "mov", "movz", "movk", "movn", "sxt", "uxt", "csel", "cset",
+      "csetm", "csinc", "csinv", "csneg", "ccmn", "ccmp"
+    ],
+    "memory": [
+      "ldr", "ldp", "ldur", "ldar", "ldxr", "ldaxr", "str", "stp",
+      "stur", "stlr", "stxr", "stlxr", "prfm", "swp", "cas", "casp"
+    ],
+    "crypto_extensions": [
+      "aese", "aesd", "aesmc", "aesimc", "sha1c", "sha1p", "sha1m",
+      "sha1h", "sha1su0", "sha1su1", "sha256h", "sha256h2",
+      "sha256su0", "sha256su1", "pmull", "crc32", "crc32c"
+    ],
+    "simd": [
+      "movi", "mvni", "ld1", "ld2", "ld3", "ld4", "st1", "st2", "st3", "st4",
+      "dup", "ins", "umov", "smov", "tbl", "tbx", "ext", "zip", "uzp", "trn",
+      "addv", "uaddlv", "cnt", "sqadd", "uqadd", "sshl", "ushl", "sshr", "ushr", "sqshl"
+    ],
+    "floating_point": [
+      "fmov", "fadd", "fsub", "fmul", "fdiv", "fnmul", "fmadd", "fmsub",
+      "fnmadd", "fnmsub", "fabs", "fneg", "fsqrt", "fcmp", "fccmp", "fcsel",
+      "fcvt", "fcvtzs", "fcvtzu", "scvtf", "ucvtf", "frinta", "frintm",
+      "frintn", "frintp", "frintz", "fmax", "fmin", "fmaxnm", "fminnm"
+    ],
+    "system": [
+      "svc", "hvc", "smc", "brk", "hlt", "nop", "mrs", "msr", "dmb", "dsb",
+      "isb", "wfe", "wfi", "sev", "sevl", "yield", "eret", "ic", "dc", "at", "tlbi"
+    ],
+    "pointer_auth": [
+      "paciasp", "pacibsp", "pacia", "pacib", "pacda", "pacdb", "pacga",
+      "autiasp", "autibsp", "autia", "autib", "autda", "autdb",
+      "xpaci", "xpacd", "retaa", "retab", "braa", "brab", "blraa", "blrab"
+    ]
+  }
 }

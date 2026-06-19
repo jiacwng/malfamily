@@ -1,111 +1,124 @@
-"""Vocabulary loader for malfamily.
+"""Load the mnemonic-root dictionary (``common/categories.json``).
 
-Loads ``common/categories.json`` and exposes the mnemonic-root vocabulary in
-the shapes the rest of the pipeline needs:
+This file does ONE job: read our hand-written dictionary of instruction
+"roots" (grouped into semantic categories, one set per CPU architecture) and
+hand back the few simple lookups the rest of the pipeline needs:
 
-* a stable, ordered flat list of every root (the column order of feature
-  vectors depends on this being deterministic);
-* the category -> [roots] mapping;
-* the reverse root -> category mapping;
-* small lookup helpers.
+    roots             ordered list of roots  -> these become the feature columns
+    root_index        root  -> its column number
+    root_to_category  root  -> the category it belongs to
+    categories        category name -> its roots
 
-The ordering contract: roots are emitted category-by-category in the order the
-categories appear in the JSON file, and within a category in declared order.
-This keeps feature-vector columns stable across runs as long as the JSON is
-unchanged. Bump ``categories.json``'s ``_meta.version`` if you reorder it so a
-stale model is easy to spot.
+There is no third-party library that can replace this, because the dictionary
+itself is our own domain knowledge (the Mnemocrypt-style category scheme). So
+the module stays deliberately tiny: read the JSON, build the lookups, done.
+
+The actual *counting* of instructions into a feature vector is NOT done here --
+that is handed to scikit-learn in the Phase-5 feature pipeline, using the
+``root_index`` below as a fixed vocabulary.
+
+Usage::
+
+    from ml import vocab
+    v = vocab.load("x86-64")     # a parser arch string
+    v.num_roots                  # 180
+    v.root_index["mov"]          # stable column number
+    v.category_of("call")        # "control_flow"
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Mapping, Tuple
 
-# common/categories.json lives one directory up from ml/.
-_CATEGORIES_PATH = Path(__file__).resolve().parent.parent / "common" / "categories.json"
+_JSON_PATH = Path(__file__).resolve().parent.parent / "common" / "categories.json"
 
-
-def _load_raw() -> Dict[str, object]:
-    with _CATEGORIES_PATH.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+_ARCH_TO_KEY = {"x86": "x86", "x86-64": "x86", "arm64": "arm64"} # 32 and 64bit architectures share roughly the same mnomonics used for arithmetics/crypto
 
 
 @lru_cache(maxsize=1)
-def _build() -> Tuple[Dict[str, Tuple[str, ...]], Tuple[str, ...], Dict[str, str]]:
-    """Parse the JSON once and cache the derived structures."""
-    raw = _load_raw()
+def _raw() -> dict:
+    """Read common/categories.json once and remember it."""
+    with _JSON_PATH.open(encoding="utf-8") as fh:
+        return json.load(fh) 
 
-    categories: Dict[str, Tuple[str, ...]] = {}
-    flat: List[str] = []
-    root_to_category: Dict[str, str] = {}
 
-    for name, roots in raw.items():
-        if name.startswith("_"):  # skip metadata keys such as "_meta"
-            continue
-        if not isinstance(roots, list):
-            raise ValueError(f"category {name!r} must map to a list, got {type(roots)}")
+def architectures() -> tuple[str, ...]:
+    """The architecture keys in the JSON, e.g. ``("x86", "arm64")``."""
+    return tuple(k for k in _raw() if not k.startswith("_")) #filters out metadata
 
-        cleaned: List[str] = []
-        for root in roots:
-            if not isinstance(root, str):
-                raise ValueError(f"root {root!r} in {name!r} is not a string")
+
+def vocab_key_for_arch(arch: str) -> str | None:
+    """Map a parser arch string ('x86'/'x86-64'/'arm64') to a vocab key."""
+    return _ARCH_TO_KEY.get(arch)
+
+
+@dataclass(frozen=True) # This way we can't accidentally change the vocab at runtime
+class Vocab:
+    """The dictionary for ONE architecture at a time only"""
+
+    arch: str
+    roots: tuple[str, ...]
+    categories: dict[str, tuple[str, ...]]
+    root_index: dict[str, int]
+    root_to_category: dict[str, str] # reverse lookup
+
+    @property
+    def num_roots(self) -> int:
+        return len(self.roots)
+
+    @property
+    def num_categories(self) -> int:
+        return len(self.categories)
+
+    @property
+    def category_names(self) -> tuple[str, ...]:
+        return tuple(self.categories)
+
+    def category_of(self, root: str) -> str | None:
+        """The category a root belongs to, or None if it is not in the vocab."""
+        return self.root_to_category.get(root)
+
+
+@lru_cache(maxsize=None)
+def load(arch: str) -> Vocab:
+    """Load the :class:`Vocab` for a parser arch string or a raw vocab key."""
+    key = _ARCH_TO_KEY.get(arch, arch)
+    data = _raw()
+    if key not in data:
+        available = sorted(k for k in data if not k.startswith("_"))
+        raise KeyError(f"no vocabulary for {arch!r}; available: {available}") #Error handling in case the feature extractor receives a bin from another architecture other than arm or elf/pe
+
+    categories: dict[str, tuple[str, ...]] = {}
+    roots: list[str] = []
+    root_to_category: dict[str, str] = {}
+    for name, items in data[key].items():
+        if name.startswith("_"): # skip metadata
+            continue 
+        categories[name] = tuple(items)
+        for root in items:
             if root in root_to_category:
-                raise ValueError(
-                    f"root {root!r} appears in both {root_to_category[root]!r} "
-                    f"and {name!r}; roots must be unique across categories"
+                raise ValueError( #Dup check
+                    f"root {root!r} is in two categories " 
+                    f"({root_to_category[root]!r} and {name!r})"
                 )
             root_to_category[root] = name
-            cleaned.append(root)
-            flat.append(root)
+            roots.append(root)
 
-        categories[name] = tuple(cleaned)
-
-    return categories, tuple(flat), root_to_category
-
-
-def categories() -> Mapping[str, Tuple[str, ...]]:
-    """Return the category -> roots mapping (insertion-ordered)."""
-    return _build()[0]
-
-
-def category_names() -> Tuple[str, ...]:
-    """Return the category names in declared order."""
-    return tuple(_build()[0].keys())
-
-
-def roots() -> Tuple[str, ...]:
-    """Return the full flat list of roots in stable feature-vector order."""
-    return _build()[1]
-
-
-def root_to_category() -> Mapping[str, str]:
-    """Return the reverse mapping root -> category name."""
-    return _build()[2]
-
-
-def category_of(root: str) -> str | None:
-    """Return the category for a root, or ``None`` if it is unknown."""
-    return _build()[2].get(root)
-
-
-def root_index() -> Mapping[str, int]:
-    """Return root -> column index, matching the order of :func:`roots`."""
-    return {root: i for i, root in enumerate(_build()[1])}
-
-
-def num_roots() -> int:
-    return len(_build()[1])
-
-
-def num_categories() -> int:
-    return len(_build()[0])
+    return Vocab(
+        arch=key,
+        roots=tuple(roots), #TO REALLY MAKE SURE THE ROOTS ARE UNMMUTABLES
+        categories=categories,
+        root_index={root: i for i, root in enumerate(roots)}, # give bos h the index and the name of the root, so it indexes automatically
+        root_to_category=root_to_category,
+    )
 
 
 if __name__ == "__main__":
-    cats = categories()
-    print(f"categories: {num_categories()}")
-    print(f"total roots: {num_roots()}")
-    for name, rs in cats.items():
-        print(f"  {name:18s} {len(rs):3d}")
+    for key in architectures():
+        v = load(key)
+        print(f"[{key}] categories={v.num_categories} roots={v.num_roots}")
+        for cat in v.category_names:
+            print(f"    {cat:18s} {len(v.categories[cat]):3d}")
