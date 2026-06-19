@@ -1,21 +1,11 @@
 """Load the mnemonic-root dictionary (``common/categories.json``).
 
-This file does ONE job: read our hand-written dictionary of instruction
+This file reads our hand-written dictionary of instruction
 "roots" (grouped into semantic categories, one set per CPU architecture) and
-hand back the few simple lookups the rest of the pipeline needs:
+hand back the few simple lookups the rest of the pipeline needs
 
-    roots             ordered list of roots  -> these become the feature columns
-    root_index        root  -> its column number
-    root_to_category  root  -> the category it belongs to
-    categories        category name -> its roots
-
-There is no third-party library that can replace this, because the dictionary
-itself is our own domain knowledge (the Mnemocrypt-style category scheme). So
-the module stays deliberately tiny: read the JSON, build the lookups, done.
-
-The actual *counting* of instructions into a feature vector is NOT done here --
-that is handed to scikit-learn in the Phase-5 feature pipeline, using the
-``root_index`` below as a fixed vocabulary.
+The actual *counting* of instructions into a feature vector is NOT done here, it'll be handed by scikit later
+ using the ``root_index`` below as a fixed vocabulary.
 
 Usage::
 
