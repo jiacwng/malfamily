@@ -6,10 +6,6 @@ mode: a subprocess runs Ghidra's batch analyzer (``analyzeHeadless``) on the
 binary, our small Java export script (``ghidra_scripts/MalfamilyExport.java``)
 dumps every function's mnemonics to a temporary JSON file, and we read it back.
 
-Why Ghidra instead of a hand-rolled disassembler:
-  * It recovers function boundaries far better than prologue heuristics.
-  * One code path handles PE, ELF, and Mach-O across x86 / x86-64 / arm64,
-    so Mach-O ("iOS") and arm64 support come for free.
 
 Requirements (NOT pip-installable):
   * Ghidra 11+  -> set the ``GHIDRA_INSTALL_DIR`` environment variable.
@@ -20,7 +16,7 @@ Public API:
     parse(path) -> ParsedBinary
 """
 
-from __future__ import annotations  # for compatibility issues
+from __future__ import annotations  # for deferred annotation evaluation
 
 import json
 import os
@@ -36,7 +32,8 @@ _SCRIPT_NAME = "MalfamilyExport.java"
 
 
 class GhidraError(RuntimeError):
-    """Raised when ONLY the Ghidra headless run fails to produce output."""
+    """Raised when the Ghidra headless run fails to produce output,
+    but also on timeout and corrupt json."""
 
 
 @dataclass
@@ -45,8 +42,8 @@ class Function:
     ghidra decoded and extracted the mnemonics from"""
 
     name: str
-    # Not sure if we will be needing va, mostly for debugging, but its given to us
-    # directly so might use it for stubborn cases
+    # mostly for debugging
+
     va: int
     mnemonics: list[str]
 
@@ -68,7 +65,7 @@ class ParsedBinary:
         return len(self.functions)
 
 
-# Not really that useful but was recommended to me as an anti-corruption layer
+# Anti corruption layer
 def _arch_of(processor: str, ptr_bytes: int) -> str:
     """('x86', 8) -> 'x86-64'; ('x86', 4) -> 'x86'; ('AARCH64', 8) -> 'arm64'."""
     bits = ptr_bytes * 8
@@ -103,7 +100,7 @@ def build_parsed_binary(data: dict) -> ParsedBinary:
     functions = [
         Function(
             name=fn["name"],
-            va=int(fn["va"]),  # Not sure if we will be needing va, mostly for debugging
+            va=int(fn["va"]),  # mostly for debugging
             mnemonics=[m.lower() for m in fn["mnemonics"]],
         )
         for fn in data["functions"]
@@ -127,7 +124,7 @@ def _ghidra_dir() -> Path:
 
 
 def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
-    """Best-effort kill of the headless launcher AND its child JVM on timeout."""
+    """kill headless launcher AND its child JVM on timeout (which would leak if not done)."""
     try:
         if os.name == "nt":
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
