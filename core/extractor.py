@@ -15,9 +15,13 @@ Public API:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from core.parser import ParsedBinary
 from ml import vocab
+
+if TYPE_CHECKING:
+    import numpy as np
 
 _SYNTHETIC_PREFIX_ROOTS: tuple[tuple[str, str], ...] = (("b.", "b.cond"),)
 
@@ -45,7 +49,7 @@ class Features:
     oov_rate: float
     num_functions: int
 
-    def as_array(self) -> "object":
+    def as_array(self) -> np.ndarray:
         # For future reference, we will call this func on every binary's Features
         # and stack them for future training pipeline
         # numpy is imported here to avoid having to import numpy if not running ghidra.
