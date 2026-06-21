@@ -30,8 +30,8 @@ _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _SAMPLES_DIR = _DATA_DIR / "samples"
 _CACHE_DIR = _DATA_DIR / "feature_cache"
 
-_MAX_OOV_RATE = 0.5  
-_MIN_MAPPED = 200  
+_MAX_OOV_RATE = 0.5
+_MIN_MAPPED = 200
 
 
 @dataclass
@@ -89,17 +89,20 @@ def build_dataset(
     cache_dir: Path = _CACHE_DIR,
     max_oov_rate: float = _MAX_OOV_RATE,
     min_mapped: int = _MIN_MAPPED,
+    max_per_family: int | None = None,
 ) -> dict[str, Dataset]:
     """Assemble one :class:`Dataset` per architecture from all downloaded samples.
 
     Samples that can't be parsed (Ghidra failure), whose architecture we don't
     model, or that fail the quality gate (too packed / too little code recovered)
-    are logged and skipped.
+    are logged and skipped. We added a max family to balance out the data despite 
+    a balance being made
     """
     # accumulator, a dictionary keyed by architecture (architecture, hashes)
     buckets: dict[str, tuple[list[np.ndarray], list[str], list[str]]] = {}
     # To avoid leakage during the train/test split
     seen: set[str] = set()
+    kept: dict[str, int] = {}  # usable samples kept per family, for max_per_family
     rows = _read_manifest(samples_dir)
     # progress to stdout (flush=True so it shows live during slow Ghidra parses)
     print(f"building dataset from {len(rows)} manifest rows...", flush=True)
@@ -107,6 +110,9 @@ def build_dataset(
         if sha256 in seen:
             continue
         seen.add(sha256)
+        # family cap: once a family has enough usable samples, skip the rest
+        if max_per_family is not None and kept.get(family, 0) >= max_per_family:
+            continue
         path = samples_dir / family / f"{sha256}.bin"
         if not path.is_file():
             print(f"  [{i}/{len(rows)}] {sha256[:12]}.. skip: file not found", flush=True)
@@ -131,6 +137,7 @@ def build_dataset(
         vecs.append(feats.as_array())
         fams.append(family)
         shas.append(sha256)
+        kept[family] = kept.get(family, 0) + 1
         print(
             f"      -> {feats.arch}, {feats.num_functions} funcs, "
             f"{feats.mapped_instructions} mapped, {feats.oov_rate:.0%} OOV",
@@ -144,10 +151,17 @@ def build_dataset(
 
 
 if __name__ == "__main__":
+    import argparse
     from collections import Counter
 
+    parser = argparse.ArgumentParser(description="Build the per-arch feature datasets.")
+    parser.add_argument(
+        "--max-per-family", type=int, default=None, help="cap usable samples per family"
+    )
+    args = parser.parse_args()
+
     try:
-        datasets = build_dataset()
+        datasets = build_dataset(max_per_family=args.max_per_family)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         sys.exit(1)

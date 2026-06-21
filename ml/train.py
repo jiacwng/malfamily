@@ -50,10 +50,13 @@ def _print_report(arch: str, ds: Dataset, report: EvalReport) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train per-arch malware-family classifiers.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--max-per-family", type=int, default=None, help="cap usable samples per family"
+    )
     args = parser.parse_args()
 
     try:
-        datasets = build_dataset()
+        datasets = build_dataset(max_per_family=args.max_per_family)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         sys.exit(1)

@@ -30,6 +30,11 @@ from tempfile import TemporaryDirectory
 _SCRIPT_DIR = Path(__file__).resolve().parent / "ghidra_scripts"
 _SCRIPT_NAME = "MalfamilyExport.java"
 
+# FOr windows defender exclusion, since ghidra holds a sample of the data 
+# while processing, 
+# windows defender will activate if this line is not here
+_WORK_DIR = Path(__file__).resolve().parent.parent / "ghidra_work"
+
 
 class GhidraError(RuntimeError):
     """Raised when the Ghidra headless run fails to produce output,
@@ -134,10 +139,11 @@ def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
         proc.kill()
 
 
-def parse(path: str | Path, analysis_timeout: int = 900) -> ParsedBinary:
+def parse(path: str | Path, analysis_timeout: int = 180) -> ParsedBinary:
     """Parse a PE / ELF / Mach-O binary into a :class:`ParsedBinary`.
 
     ``analysis_timeout`` bounds Ghidra's auto-analysis per file (seconds).
+    this timout time can change depending on the database behavior
     """
     path = Path(path)
     if not path.is_file():
@@ -150,7 +156,8 @@ def parse(path: str | Path, analysis_timeout: int = 900) -> ParsedBinary:
 
     # this was a clever way to delete the remaining files I didnt need from ghidra
     # (logs) as they piled up
-    with TemporaryDirectory(prefix="malfamily_ghidra_") as tmp:
+    _WORK_DIR.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="malfamily_ghidra_", dir=_WORK_DIR) as tmp:
         # Import a copy under a fixed, safe name: the original (attacker-controlled)
         # filename never reaches the command line, so it can't inject shell metacharacters.
         sample = Path(tmp) / "sample.bin"
@@ -180,6 +187,7 @@ def parse(path: str | Path, analysis_timeout: int = 900) -> ParsedBinary:
         # Own process group so a timeout can take down the child JVM too, not just the launcher.
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,  # so ghidra's .bat "pause" on error gets EOF
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -191,9 +199,11 @@ def parse(path: str | Path, analysis_timeout: int = 900) -> ParsedBinary:
             stdout, stderr = proc.communicate(timeout=analysis_timeout + 300)
         except subprocess.TimeoutExpired as e:
             _kill_process_tree(proc)
-            proc.communicate()
+            stdout, stderr = proc.communicate()  # drain whatever ghidra logged so far
+            tail = ((stdout or "") + (stderr or ""))[-1500:]  # shows where it got stuck
             raise GhidraError(
-                f"Ghidra timed out on {path.name} after {analysis_timeout + 300}s"
+                f"Ghidra timed out on {path.name} after {analysis_timeout + 300}s\n"
+                f"--- last Ghidra output before kill ---\n{tail}"
             ) from e
 
         if not out_json.exists():
