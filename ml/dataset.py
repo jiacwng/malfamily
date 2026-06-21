@@ -1,16 +1,12 @@
-"""Phase 5: feature pipeline -- manifest + samples -> per-arch (X, y) matrices.
+"""feature pipeline, manifest + samples -> per-arch (X, y) matrices.
 
 Walks ``data/samples/manifest.csv``, turns each binary into a feature vector
 (parse -> extract), and assembles one labeled matrix PER ARCHITECTURE: x86 and
 arm64 have different feature dimensions, so they train as separate models.
 
-Extraction is cached per sample (keyed by sha256), so Ghidra 
+Extraction is cached per sample (keyed by sha256), so Ghidra
 runs at most once per sample. Re-running after adding samples only parses
 the new ones.
-
-NOTE: the cache key is the content hash only. If you change the vocabulary
-(``common/categories.json``) or the extractor, delete ``data/feature_cache/`` to
-force a rebuild -- otherwise you would train on stale feature vectors.
 
 Usage:
     python -m ml.dataset        # build + print a per-arch / per-family summary
@@ -33,6 +29,9 @@ from core.parser import GhidraError, parse
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _SAMPLES_DIR = _DATA_DIR / "samples"
 _CACHE_DIR = _DATA_DIR / "feature_cache"
+
+_MAX_OOV_RATE = 0.5  
+_MIN_MAPPED = 200  
 
 
 @dataclass
@@ -58,7 +57,8 @@ def _save_features(sha256: str, feats: Features, cache_dir: Path) -> None:
 
 def _load_features(sha256: str, cache_dir: Path) -> Features:
     d = json.loads(_cache_path(sha256, cache_dir).read_text(encoding="utf-8"))
-    # since json loads returns lists rather than tuples, we have to reconvert them into tuple after reloading
+    # since json loads returns lists rather than tuples, we have to reconvert
+    # them into tuple after reloading
     d["root_vector"] = tuple(d["root_vector"])
     d["category_vector"] = tuple(d["category_vector"])
     return Features(**d)
@@ -68,7 +68,7 @@ def featurize(path: Path, sha256: str, cache_dir: Path = _CACHE_DIR) -> Features
     """Features for one sample and caches it if not already in cache"""
     if _cache_path(sha256, cache_dir).exists():
         return _load_features(sha256, cache_dir)
-    feats = extract(parse(path))  
+    feats = extract(parse(path))
     _save_features(sha256, feats, cache_dir)
     return feats
 
@@ -85,35 +85,57 @@ def _read_manifest(samples_dir: Path) -> list[tuple[str, str]]:
 
 
 def build_dataset(
-    samples_dir: Path = _SAMPLES_DIR, cache_dir: Path = _CACHE_DIR
+    samples_dir: Path = _SAMPLES_DIR,
+    cache_dir: Path = _CACHE_DIR,
+    max_oov_rate: float = _MAX_OOV_RATE,
+    min_mapped: int = _MIN_MAPPED,
 ) -> dict[str, Dataset]:
     """Assemble one :class:`Dataset` per architecture from all downloaded samples.
 
-    Samples that can't be parsed (Ghidra failure) or whose architecture 
-    we don't model are logged and skipped.
+    Samples that can't be parsed (Ghidra failure), whose architecture we don't
+    model, or that fail the quality gate (too packed / too little code recovered)
+    are logged and skipped.
     """
     # accumulator, a dictionary keyed by architecture (architecture, hashes)
     buckets: dict[str, tuple[list[np.ndarray], list[str], list[str]]] = {}
     # To avoid leakage during the train/test split
     seen: set[str] = set()
-    for sha256, family in _read_manifest(samples_dir):
+    rows = _read_manifest(samples_dir)
+    # progress to stdout (flush=True so it shows live during slow Ghidra parses)
+    print(f"building dataset from {len(rows)} manifest rows...", flush=True)
+    for i, (sha256, family) in enumerate(rows, 1):
         if sha256 in seen:
             continue
         seen.add(sha256)
         path = samples_dir / family / f"{sha256}.bin"
         if not path.is_file():
-            print(f"  skip {sha256[:12]}..: file not found", file=sys.stderr)
+            print(f"  [{i}/{len(rows)}] {sha256[:12]}.. skip: file not found", flush=True)
             continue
+        cached = _cache_path(sha256, cache_dir).exists()
+        step = "cached" if cached else "parsing via ghidra (can take minutes)..."
+        print(f"  [{i}/{len(rows)}] {sha256[:12]}.. ({family}) {step}", flush=True)
         try:
             feats = featurize(path, sha256, cache_dir)
         except (GhidraError, ExtractorError) as e:
-            print(f"  skip {sha256[:12]}..: {e}", file=sys.stderr)
+            print(f"      skip: {e}", flush=True)
             continue
-        vecs, fams, shas = buckets.setdefault(feats.arch, ([], [], [])) # for each sample in the manifest that is unique, featurize it
-        # and file its (vec,label,hash) under its arch
+        # quality threshold
+        if feats.oov_rate > max_oov_rate or feats.mapped_instructions < min_mapped:
+            print(
+                f"      skip (low quality): {feats.mapped_instructions} mapped, "
+                f"{feats.oov_rate:.0%} OOV",
+                flush=True,
+            )
+            continue
+        vecs, fams, shas = buckets.setdefault(feats.arch, ([], [], []))
         vecs.append(feats.as_array())
         fams.append(family)
         shas.append(sha256)
+        print(
+            f"      -> {feats.arch}, {feats.num_functions} funcs, "
+            f"{feats.mapped_instructions} mapped, {feats.oov_rate:.0%} OOV",
+            flush=True,
+        )
 
     return {
         arch: Dataset(arch, np.vstack(vecs), np.array(fams), shas)
