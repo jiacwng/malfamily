@@ -53,10 +53,13 @@ def main() -> None:
     parser.add_argument(
         "--max-per-family", type=int, default=None, help="cap usable samples per family"
     )
+    parser.add_argument(
+        "--max-entropy", type=float, default=None, help="skip files above this entropy (packed)"
+    )
     args = parser.parse_args()
 
     try:
-        datasets = build_dataset(max_per_family=args.max_per_family)
+        datasets = build_dataset(max_per_family=args.max_per_family, max_entropy=args.max_entropy)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         sys.exit(1)

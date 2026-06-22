@@ -44,6 +44,16 @@ class Dataset:
     sha256s: list[str]  # row index -> source sample hash, for traceability
 
 
+def _file_entropy(path: Path) -> float:
+    """Shannon entropy in bits/byte (0-8 lowest to highest)."""
+    data = np.frombuffer(path.read_bytes(), dtype=np.uint8)
+    if data.size == 0: # avoids divide by 0 in the fraction
+        return 0.0
+    counts = np.bincount(data, minlength=256)
+    p = counts[counts > 0] / data.size 
+    return float(-(p * np.log2(p)).sum())
+
+
 def _cache_path(sha256: str, cache_dir: Path) -> Path:
     return cache_dir / f"{sha256}.json"
 
@@ -90,12 +100,13 @@ def build_dataset(
     max_oov_rate: float = _MAX_OOV_RATE,
     min_mapped: int = _MIN_MAPPED,
     max_per_family: int | None = None,
+    max_entropy: float | None = None,
 ) -> dict[str, Dataset]:
     """Assemble one :class:`Dataset` per architecture from all downloaded samples.
 
     Samples that can't be parsed (Ghidra failure), whose architecture we don't
     model, or that fail the quality gate (too packed / too little code recovered)
-    are logged and skipped. We added a max family to balance out the data despite 
+    are logged and skipped. We added a max family to balance out the data despite
     a balance being made
     """
     # accumulator, a dictionary keyed by architecture (architecture, hashes)
@@ -118,6 +129,17 @@ def build_dataset(
             print(f"  [{i}/{len(rows)}] {sha256[:12]}.. skip: file not found", flush=True)
             continue
         cached = _cache_path(sha256, cache_dir).exists()
+        # filter to keep on the uncached and files whose entrepy is below the threshold
+        # (likely not packed)
+        if not cached and max_entropy is not None:
+            ent = _file_entropy(path)
+            if ent > max_entropy:
+                print(
+                    f"  [{i}/{len(rows)}] {sha256[:12]}.. ({family}) "
+                    f"skip: likely packed (entropy {ent:.2f})",
+                    flush=True,
+                )
+                continue
         step = "cached" if cached else "parsing via ghidra (can take minutes)..."
         print(f"  [{i}/{len(rows)}] {sha256[:12]}.. ({family}) {step}", flush=True)
         try:
@@ -158,10 +180,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-per-family", type=int, default=None, help="cap usable samples per family"
     )
+    parser.add_argument(
+        "--max-entropy", type=float, default=None, help="skip files above this entropy (packed)"
+    )
     args = parser.parse_args()
 
     try:
-        datasets = build_dataset(max_per_family=args.max_per_family)
+        datasets = build_dataset(max_per_family=args.max_per_family, max_entropy=args.max_entropy)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         sys.exit(1)
