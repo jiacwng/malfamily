@@ -47,10 +47,10 @@ class Dataset:
 def _file_entropy(path: Path) -> float:
     """Shannon entropy in bits/byte (0-8 lowest to highest)."""
     data = np.frombuffer(path.read_bytes(), dtype=np.uint8)
-    if data.size == 0: # avoids divide by 0 in the fraction
+    if data.size == 0:  # avoids divide by 0 in the fraction
         return 0.0
     counts = np.bincount(data, minlength=256)
-    p = counts[counts > 0] / data.size 
+    p = counts[counts > 0] / data.size
     return float(-(p * np.log2(p)).sum())
 
 
@@ -90,7 +90,9 @@ def _read_manifest(samples_dir: Path) -> list[tuple[str, str]]:
         raise FileNotFoundError(
             f"no manifest at {manifest} -- run `python -m data.fetch_samples` first"
         )
-    with manifest.open(newline="", encoding="utf-8") as fh:
+    # utf-8-sig tolerates a UTF-8 BOM (e.g. if the manifest was re-saved by a
+    # tool like PowerShell's Export-Csv) so the first column key stays "sha256".
+    with manifest.open(newline="", encoding="utf-8-sig") as fh:
         return [(row["sha256"], row["family"]) for row in csv.DictReader(fh)]
 
 
