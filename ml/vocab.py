@@ -13,17 +13,14 @@ Usage::
     v = vocab.load("x86-64")     # a parser arch string
     v.num_roots                  # 180
     v.root_index["mov"]          # stable column number
-    v.category_of("call")        # "control_flow"
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from types import MappingProxyType
 
 _JSON_PATH = Path(__file__).resolve().parent.parent / "common" / "categories.json"
 
@@ -49,9 +46,9 @@ class Vocab:
 
     arch: str
     roots: tuple[str, ...]
-    categories: Mapping[str, tuple[str, ...]]
-    root_index: Mapping[str, int]
-    root_to_category: Mapping[str, str]  # reverse lookup
+    categories: dict[str, tuple[str, ...]]
+    root_index: dict[str, int]
+    root_to_category: dict[str, str]  # reverse lookup
 
     @property
     def num_roots(self) -> int:
@@ -65,20 +62,13 @@ class Vocab:
     def category_names(self) -> tuple[str, ...]:
         return tuple(self.categories)
 
-    def category_of(self, root: str) -> str | None:
-        """The category a root belongs to, or None if it is not in the vocab."""
-        return self.root_to_category.get(root)
 
-
+# cache per resolved arch so we don't rebuild the lookup dicts on every call.
+# (x86 and x86-64 cache as two identical entries -- a negligible duplicate.)
+@lru_cache(maxsize=None)
 def load(arch: str) -> Vocab:
     """Load the :class:`Vocab` for a parser arch string or a raw vocab key."""
-    # resolve aliases first so x86 / x86-64 share one cached Vocab
-    return _load_key(_ARCH_TO_KEY.get(arch, arch))
-
-
-# cache it per arch so we dont rebuild the whole lookup dict on every call
-@lru_cache(maxsize=None)
-def _load_key(key: str) -> Vocab:
+    key = _ARCH_TO_KEY.get(arch, arch)  # x86-64 -> x86
     data = _raw()
     if key not in data:
         available = sorted(k for k in data if not k.startswith("_"))
@@ -103,12 +93,11 @@ def _load_key(key: str) -> Vocab:
 
     return Vocab(
         arch=key,
-        roots=tuple(roots),  # TO REALLY MAKE SURE THE ROOTS ARE UNMMUTABLES
-        # read-only views: the cached Vocab is shared, so no caller can poison it
-        categories=MappingProxyType(categories),
+        roots=tuple(roots),
+        categories=categories,
         # give both the index and the name of the root, so it indexes automatically
-        root_index=MappingProxyType({root: i for i, root in enumerate(roots)}),
-        root_to_category=MappingProxyType(root_to_category),
+        root_index={root: i for i, root in enumerate(roots)},
+        root_to_category=root_to_category,
     )
 
 
