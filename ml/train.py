@@ -16,7 +16,6 @@ from ml.classifier import EvalReport
 from ml.dataset import Dataset, build_dataset
 
 _MODEL_DIR = Path(__file__).resolve().parent  # ml/
-_MIN_PER_FAMILY = 2  # a family needs >=2 samples to appear in both train and test
 
 
 def _model_path(arch: str) -> Path:
@@ -24,9 +23,9 @@ def _model_path(arch: str) -> Path:
 
 
 def _trainable(ds: Dataset) -> bool:
-    """At least 2 families, each with enough samples for a stratified split."""
-    counts = Counter(ds.y.tolist())
-    return len(counts) >= 2 and min(counts.values()) >= _MIN_PER_FAMILY
+    """Need >=2 families to classify between; the stratified-split edge cases (a
+    family too small to split) are caught by the try/except around train()."""
+    return len(set(ds.y.tolist())) >= 2
 
 
 def _print_report(arch: str, ds: Dataset, report: EvalReport) -> None:
@@ -45,6 +44,14 @@ def _print_report(arch: str, ds: Dataset, report: EvalReport) -> None:
     for i, lab in enumerate(report.labels):
         cells = "".join(f"{int(report.confusion[i, j]):>9d}" for j in range(len(report.labels)))
         print(f"    {lab[:16]:16s}{cells}")
+    # calibration: predict-time low-confidence cutoff comes from where accuracy
+    # falls off as the decision margin (p1-p2) shrinks.
+    print("  margin calibration (accuracy by decision margin p1-p2):")
+    for lo, hi in ((0.0, 0.1), (0.1, 0.25), (0.25, 1.01)):
+        mask = (report.margins >= lo) & (report.margins < hi)
+        n = int(mask.sum())
+        acc = float(report.correct[mask].mean()) if n else 0.0
+        print(f"    margin [{lo:.2f}, {hi:.2f}): {acc:6.1%} correct  (n={n})")
 
 
 def main() -> None:
@@ -59,7 +66,10 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        datasets = build_dataset(max_per_family=args.max_per_family, max_entropy=args.max_entropy)
+        datasets = build_dataset(
+            max_per_family=args.max_per_family,
+            max_entropy=args.max_entropy,
+        )
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         sys.exit(1)
