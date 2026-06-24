@@ -15,15 +15,11 @@ Public API:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+
+import numpy as np
 
 from core.parser import ParsedBinary
 from ml import vocab
-
-if TYPE_CHECKING:
-    import numpy as np
-
-_SYNTHETIC_PREFIX_ROOTS: tuple[tuple[str, str], ...] = (("b.", "b.cond"),)
 
 
 class ExtractorError(RuntimeError):
@@ -50,11 +46,7 @@ class Features:
     num_functions: int
 
     def as_array(self) -> np.ndarray:
-        # For future reference, we will call this func on every binary's Features
-        # and stack them for future training pipeline
-        # numpy is imported here to avoid having to import numpy if not running ghidra.
-        import numpy as np
-
+        # called on every binary's Features, then stacked into the training matrix
         return np.asarray(self.root_vector + self.category_vector, dtype=float)
 
 
@@ -64,10 +56,9 @@ def _root_of(mnemonic: str, roots: frozenset[str]) -> str | None:
     if mnemonic in roots:
         return mnemonic
 
-    # only for handling arm conditional branches like b.eq
-    for prefix, root in _SYNTHETIC_PREFIX_ROOTS:
-        if root in roots and mnemonic.startswith(prefix):
-            return root
+    # arm conditional branches (b.eq, b.ne, ...) gather on b.cond root
+    if "b.cond" in roots and mnemonic.startswith("b."):
+        return "b.cond"
 
     # for prefix match, we shrink the mnemonic one chat a time from the end and
     # return the first prefix that is detected
