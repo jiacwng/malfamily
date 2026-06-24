@@ -5,7 +5,7 @@ their feature vectors differ in width), with evaluation report.
 
 Public API:
     train(X, y)        -> (model, EvalReport)
-    predict(model, v)  -> (family, confidence)
+    predict(model, v)  -> (family, confidence, margin)
     save(model, path) / load(path)
 """
 
@@ -32,6 +32,10 @@ class EvalReport:
     per_family: dict[str, dict[str, float]]
     confusion: np.ndarray  # (n_labels, n_labels), row=true / col=pred, order=labels
     labels: list[str]
+    # per-test-sample calibration data: decision margin (p1-p2) and whether the
+    # prediction was correct -- used to choose the predict-time low-confidence cutoff.
+    margins: np.ndarray
+    correct: np.ndarray
 
 
 def train(
@@ -42,7 +46,6 @@ def train(
     n_estimators: int = 300,
     seed: int = 0,
 ) -> tuple[RandomForestClassifier, EvalReport]:
-
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, stratify=y, random_state=seed
     )
@@ -74,6 +77,12 @@ def _evaluate(model: RandomForestClassifier, X_test: np.ndarray, y_test: np.ndar
     counts = Counter(y_test.tolist())
     baseline = counts.most_common(1)[0][1] / len(y_test)
 
+    # per-sample decision margin (p1 - p2) + correctness, for confidence calibration
+    proba = model.predict_proba(X_test)
+    top2 = np.sort(proba, axis=1)[:, -2:]  # columns are (p2, p1)
+    margins = (top2[:, 1] - top2[:, 0]).astype(float)
+    correct = y_pred == y_test
+
     return EvalReport(
         accuracy=float(rep["accuracy"]),
         baseline_accuracy=float(baseline),
@@ -81,15 +90,24 @@ def _evaluate(model: RandomForestClassifier, X_test: np.ndarray, y_test: np.ndar
         per_family=per_family,
         confusion=confusion_matrix(y_test, y_pred, labels=labels),
         labels=labels,
+        margins=margins,
+        correct=correct,
     )
 
 
-def predict(model: RandomForestClassifier, vector: np.ndarray) -> tuple[str, float]:
-    """Predicted family and its confidence (max class probability) for one vector."""
+def predict(model: RandomForestClassifier, vector: np.ndarray) -> tuple[str, float, float]:
+    """Predicted family, confidence (top probability p1), and decision margin (p1-p2).
+
+    The margin -- how far the winner beat the runner-up -- is the multi-class
+    confidence signal; a static p1 threshold mis-fires as the class count grows.
+    """
     # scikit-learn models require a 2d table
     proba = model.predict_proba(vector.reshape(1, -1))[0]
-    i = int(np.argmax(proba)) # finding the best guess
-    return str(model.classes_[i]), float(proba[i])
+    order = np.argsort(proba)[::-1]  # classes from most to least likely
+    i = int(order[0])
+    p1 = float(proba[i])
+    p2 = float(proba[order[1]]) if proba.size > 1 else 0.0
+    return str(model.classes_[i]), p1, p1 - p2
 
 
 def save(model: RandomForestClassifier, path: Path) -> None:
