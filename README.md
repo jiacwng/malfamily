@@ -83,8 +83,9 @@ are committed, so the samples themselves stay out of the repository.
 python -m data.fetch_samples --family Vidar --limit 50
 ```
 
-The repository ships the feature cache in `data/feature_cache/`, so training runs without
-Ghidra or any local samples.
+The repository ships the extracted features as a single bundle, `data/features_x86.npz`, so
+training runs without Ghidra or any local samples, and `python -m ml.train --rebuild`
+regenerates the dataset from the local cache.
 
 The path from a file to a prediction runs through a few stages.
 

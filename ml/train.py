@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ml import classifier
 from ml.classifier import EvalReport
-from ml.dataset import Dataset, build_dataset
+from ml.dataset import Dataset, build_dataset, load_bundle
 
 _MODEL_DIR = Path(__file__).resolve().parent  # ml/
 
@@ -57,19 +57,31 @@ def main() -> None:
     parser.add_argument(
         "--manifest", default="manifest.csv", help="manifest filename under data/samples/"
     )
+    parser.add_argument(
+        "--rebuild", action="store_true",
+        help="ignore the shipped feature bundle and rebuild from the cache + manifest"
+    )
     args = parser.parse_args()
 
-    try:
-        datasets = build_dataset(max_entropy=args.max_entropy, manifest_name=args.manifest)
-    except FileNotFoundError as e:
-        print(e, file=sys.stderr)
-        sys.exit(1)
+    # Default training uses the shared bundle so it works right away on a fresh clone. 
+    # If you run with `--rebuild` or the file isn't there, it rebuilds everything using the 
+    # local cache that I possess
+    
+    datasets = {} if args.rebuild else load_bundle()
+    if datasets:
+        print("training from feature bundle (data/features_*.npz)")
+    else:
+        try:
+            datasets = build_dataset(max_entropy=args.max_entropy, manifest_name=args.manifest)
+        except FileNotFoundError as e:
+            print(e, file=sys.stderr)
+            sys.exit(1)
     if not datasets:
         print("no usable samples -- fetch some with `python -m data.fetch_samples` first")
         sys.exit(1)
 
     for arch, ds in sorted(datasets.items()):
-        
+
         try:
             model, report = classifier.train(ds.X, ds.y, seed=args.seed)
         except ValueError as e:

@@ -12,6 +12,7 @@ import csv
 import dataclasses
 import json
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,8 +30,10 @@ _MIN_MAPPED = 200
 
 # Maps folder names on disk (malware families) to our 6 training labels.
 # We simplified from 8 labels to 6 to help our model learn better:
-# - Merged Backdoor into RAT and Dropper into Loader because they did similar things and confused the model.
-# - New families were found using tags, but we still label them by family name because tags are too noisy.
+# - Merged Backdoor into RAT and Dropper into Loader because they did similar things
+#   and confused the model.
+# - New families were found using tags, but we still label them by family name because
+#   tags are too noisy.
 # - Removed Adware/Rootkit (not enough files) and Mirai (CPU architectures we don't support).
 FAMILY_TO_TYPE = {
     # Infostealer
@@ -136,7 +139,7 @@ def _save_failure(sha256: str, reason: str, cache_dir: Path) -> None:
 
 def _load_features(sha256: str, cache_dir: Path) -> Features:
     d = json.loads(_cache_path(sha256, cache_dir).read_text(encoding="utf-8"))
-    # Cached failure: We throw the error immediately to skip running Ghidra again on 
+    # Cached failure: We throw the error immediately to skip running Ghidra again on
     # stuff we already know will fail.
     if "extractor_error" in d:
         raise ExtractorError(d["extractor_error"])
@@ -248,9 +251,46 @@ def build_dataset(
     }
 
 
+# Code to generate the train-ready distribution artifact. Creates a compressed .npz archive 
+# per architecture containing validated feature matrices (float64 for deterministic reproducibility), 
+# labels, and source hashes.
+_BUNDLE_PREFIX = "features_"
+
+
+def export_bundle(datasets: dict[str, Dataset], out_dir: Path = _DATA_DIR) -> list[Path]:
+    """Write each arch's (X, y, sha) to data/features_<arch>.npz and return the paths.
+
+    Arches too small to train (a single class, or any class with one sample, which would
+    break the stratified split) are skipped, so a stray off-arch sample never ships.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for arch, ds in datasets.items():
+        label_counts = Counter(ds.y.tolist())
+        if len(label_counts) < 2 or min(label_counts.values()) < 2:
+            print(f"skip bundle for {arch}: too small to train ({dict(label_counts)})")
+            continue
+        path = out_dir / f"{_BUNDLE_PREFIX}{arch}.npz"
+        np.savez_compressed(
+            path, X=ds.X.astype(np.float64), y=ds.y, sha=np.asarray(ds.sha256s)
+        )
+        written.append(path)
+    return written
+
+
+def load_bundle(bundle_dir: Path = _DATA_DIR) -> dict[str, Dataset]:
+    """Load shipped feature bundles into Datasets, or {} when none exist (so callers
+    can fall back to building from the cache)."""
+    out: dict[str, Dataset] = {}
+    for path in sorted(bundle_dir.glob(f"{_BUNDLE_PREFIX}*.npz")):
+        arch = path.stem[len(_BUNDLE_PREFIX):]
+        with np.load(path, allow_pickle=False) as d:
+            out[arch] = Dataset(arch, d["X"], d["y"].astype(str), list(d["sha"].astype(str)))
+    return out
+
+
 if __name__ == "__main__":
     import argparse
-    from collections import Counter
 
     parser = argparse.ArgumentParser(description="Build the per-arch feature datasets.")
     parser.add_argument(
@@ -258,6 +298,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--manifest", default="manifest.csv", help="manifest filename under data/samples/"
+    )
+    parser.add_argument(
+        "--export-bundle", action="store_true",
+        help="write data/features_<arch>.npz for shipping (train-on-clone artifact)"
     )
     args = parser.parse_args()
 
@@ -273,3 +317,7 @@ if __name__ == "__main__":
         print(f"[{arch}] {ds.X.shape[0]} samples x {ds.X.shape[1]} features")
         for fam, n in sorted(Counter(ds.y.tolist()).items()):
             print(f"    {fam:24s} {n}")
+
+    if args.export_bundle:
+        for path in export_bundle(datasets):
+            print(f"wrote bundle -> {path}")
