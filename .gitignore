@@ -1,20 +1,35 @@
-# --- Never commit malware samples or anything derived from them ---
-data/samples/
+# ============================================================
+# SECURITY
+# ============================================================
+data/samples/*
+!data/samples/manifest.csv
 *.bin
 *.exe
-*.elf
 *.dll
+*.sys
+*.elf
 *.so
+*.dylib
+*.macho
 *.sample
 
-# Trained artifacts / extracted features (regenerable, often large)
-ml/model.pkl
-data/features.npy
-data/label_array.npy
+# Kept local
+data/fetch_samples.py
+data/balance_manifest.py
+tests/
+.github/
+requirements-dev.txt
 
-# Generated docs images are committed deliberately in Phase 8, so not ignored.
+# Trained models 
+*.pkl
 
+# Logs / Ghidra scratch
+*.log
+ghidra_work/
+
+# ============================================================
 # Python
+# ============================================================
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -23,10 +38,16 @@ venv/
 env/
 .mypy_cache/
 .pytest_cache/
+.ruff_cache/
 .ipynb_checkpoints/
+.coverage
+htmlcov/
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+NOTES.md
+old_read_me.md
+data/results_unbalanced_6type.md

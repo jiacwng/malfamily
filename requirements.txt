@@ -1,0 +1,7 @@
+
+# To classify a NEW binary, you also need to install separately:
+#   * Ghidra 11+   and set GHIDRA_INSTALL_DIR
+#   * a JDK 21+    and set JAVA_HOME
+
+numpy==1.24.3
+scikit-learn==1.3.0

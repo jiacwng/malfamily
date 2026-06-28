@@ -1,15 +1,9 @@
-"""feature pipeline, manifest + samples -> per-arch (X, y) matrices.
+"""
+Loads the manifest, extracts features from the binaries, and groups them by architecture.
 
-Walks ``data/samples/manifest.csv``, turns each binary into a feature vector
-(parse -> extract), and assembles one labeled matrix PER ARCHITECTURE: x86 and
-arm64 have different feature dimensions, so they train as separate models.
-
-Extraction is cached per sample (keyed by sha256), so Ghidra
-runs at most once per sample. Re-running after adding samples only parses
-the new ones.
-
+Features are cached by SHA256 to avoid running Ghidra multiple times on the same sample
 Usage:
-    python -m ml.dataset        # build + print a per-arch / per-family summary
+    python -m ml.dataset        # build + print a per-arch / per-type summary
 """
 
 from __future__ import annotations
@@ -33,6 +27,72 @@ _CACHE_DIR = _DATA_DIR / "feature_cache"
 _MAX_OOV_RATE = 0.5
 _MIN_MAPPED = 200
 
+# Maps folder names on disk (malware families) to our 6 training labels.
+# We simplified from 8 labels to 6 to help our model learn better:
+# - Merged Backdoor into RAT and Dropper into Loader because they did similar things and confused the model.
+# - New families were found using tags, but we still label them by family name because tags are too noisy.
+# - Removed Adware/Rootkit (not enough files) and Mirai (CPU architectures we don't support).
+FAMILY_TO_TYPE = {
+    # Infostealer
+    "Vidar": "Infostealer",
+    "AmosStealer": "Infostealer",  # macOS (Objective-See)
+    "RedLineStealer": "Infostealer",
+    "AgentTesla": "Infostealer",
+    "Formbook": "Infostealer",
+    "Cuckoo": "Infostealer",  # macOS (Objective-See)
+    "AtomicStealer": "Infostealer",  # macOS (Objective-See)
+    "KeySteal": "Infostealer",  # macOS (Objective-See)
+    "SalatStealer": "Infostealer",  # tag-discovery
+    "ScarfaceStealer": "Infostealer",  # tag-discovery
+    "RemusStealer": "Infostealer",  # tag-discovery
+    "Rhadamanthys": "Infostealer",  # tag-discovery
+    # RAT (absorbs the former Backdoor class)
+    "RemcosRAT": "RAT",
+    "AsyncRAT": "RAT",
+    "Gh0stRAT": "RAT",
+    "NetWire": "RAT",
+    "DarkComet": "RAT",
+    "RustBucket": "RAT",  # macOS (Objective-See)
+    "OceanLotus": "RAT",  # macOS (Objective-See); was Backdoor
+    "CobaltStrike": "RAT",  # was Backdoor
+    "ValleyRAT": "RAT",  # tag-discovery (native C++ -- parses well)
+    # NanoCore / QuasarRAT / DCRat / njrat dropped: pure .NET (MSIL), so Ghidra
+    # sees only a 1-instruction native stub -> all skip the quality gate (or hang).
+    # A native-code classifier can't use managed-code families.
+    # Ransomware
+    "Stop": "Ransomware",
+    "LockBit": "Ransomware",
+    "EvilQuest": "Ransomware",  # macOS (Objective-See)
+    "KeRanger": "Ransomware",  # macOS (Objective-See)
+    "macRansom": "Ransomware",  # macOS (Objective-See)
+    "WannaCry": "Ransomware",
+    "Akira": "Ransomware",  # tag-discovery
+    "RAWorld": "Ransomware",  # tag-discovery
+    "Qilin": "Ransomware",  # tag-discovery
+    "BianLian": "Ransomware",  # tag-discovery
+    # Loader (absorbs the former Dropper class)
+    "Smoke Loader": "Loader",
+    "Amadey": "Loader",
+    "Emotet": "Loader",
+    "GuLoader": "Loader",  # was Dropper
+    "Shlayer": "Loader",  # macOS (Objective-See); was Dropper
+    "Pikabot": "Loader",  # was Backdoor
+    "Matanbuchus": "Loader",  # tag-discovery
+    "Wslink": "Loader",  # tag-discovery
+    "PrivateLoader": "Loader",  # tag-discovery
+    # Banker
+    "Dridex": "Banker",
+    "IcedID": "Banker",
+    "TrickBot": "Banker",
+    "Mekotio": "Banker",  # tag-discovery
+    "Grandoreiro": "Banker",  # tag-discovery
+    "Ousaban": "Banker",  # tag-discovery
+    # Miner
+    "CoinMiner": "Miner",
+    "BirdMiner": "Miner",  # macOS (Objective-See)
+    "SilentCryptoMiner": "Miner",  # tag-discovery
+}
+
 
 @dataclass
 class Dataset:
@@ -40,14 +100,14 @@ class Dataset:
 
     arch: str
     X: np.ndarray  # (n_samples, n_features) float
-    y: np.ndarray  # (n_samples,) family labels (str)
-    sha256s: list[str]  # row index -> source sample hash, for traceability
+    y: np.ndarray  # (n_samples,) malware-type labels (str)
+    sha256s: list[str]  # Keeps track of which file hash belongs to each row in the dataset.
 
 
 def _file_entropy(path: Path) -> float:
-    """Shannon entropy in bits/byte (0-8 lowest to highest)."""
+    """Shannon entropy"""
     data = np.frombuffer(path.read_bytes(), dtype=np.uint8)
-    if data.size == 0:  # avoids divide by 0 in the fraction
+    if data.size == 0:
         return 0.0
     counts = np.bincount(data, minlength=256)
     p = counts[counts > 0] / data.size
@@ -65,9 +125,22 @@ def _save_features(sha256: str, feats: Features, cache_dir: Path) -> None:
     )
 
 
+def _save_failure(sha256: str, reason: str, cache_dir: Path) -> None:
+    """Negative cache: remember a *deterministic* extraction failure (e.g. an
+    unsupported architecture) so we never re-run Ghidra on this sample again."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _cache_path(sha256, cache_dir).write_text(
+        json.dumps({"extractor_error": reason}), encoding="utf-8"
+    )
+
+
 def _load_features(sha256: str, cache_dir: Path) -> Features:
     d = json.loads(_cache_path(sha256, cache_dir).read_text(encoding="utf-8"))
-    # since json loads returns lists rather than tuples, we have to reconvert
+    # Cached failure: We throw the error immediately to skip running Ghidra again on 
+    # stuff we already know will fail.
+    if "extractor_error" in d:
+        raise ExtractorError(d["extractor_error"])
+    # Since json loads returns lists rather than tuples, we have to reconvert
     # them into tuple after reloading
     d["root_vector"] = tuple(d["root_vector"])
     d["category_vector"] = tuple(d["category_vector"])
@@ -75,23 +148,32 @@ def _load_features(sha256: str, cache_dir: Path) -> Features:
 
 
 def featurize(path: Path, sha256: str, cache_dir: Path = _CACHE_DIR) -> Features:
-    """Features for one sample and caches it if not already in cache"""
+    """Features for one sample, cached by SHA256.
+
+    A successful extraction caches its feature vector; a deterministic failure
+    (unsupported arch) is negative-cached so Ghidra never re-runs on it. Transient
+    failures (GhidraError timeouts) are left uncached so they can be retried.
+    """
     if _cache_path(sha256, cache_dir).exists():
         return _load_features(sha256, cache_dir)
-    feats = extract(parse(path))
+    try:
+        feats = extract(parse(path))
+    except ExtractorError as e:
+        _save_failure(sha256, str(e), cache_dir)
+        raise
     _save_features(sha256, feats, cache_dir)
     return feats
 
 
-def _read_manifest(samples_dir: Path) -> list[tuple[str, str]]:
+def _read_manifest(samples_dir: Path, manifest_name: str = "manifest.csv") -> list[tuple[str, str]]:
     """(sha256, family) rows from the downloader's manifest."""
-    manifest = samples_dir / "manifest.csv"
+    manifest = samples_dir / manifest_name
     if not manifest.exists():
         raise FileNotFoundError(
-            f"no manifest at {manifest} -- run `python -m data.fetch_samples` first"
+            f"no manifest at {manifest} (it ships with the repo alongside the feature cache)"
         )
-    # utf-8-sig tolerates a UTF-8 BOM (e.g. if the manifest was re-saved by a
-    # tool like PowerShell's Export-Csv) so the first column key stays "sha256".
+    # Use utf-8-sig so hidden formatting characters
+    # from Excel/PowerShell CSVs don't mess up the first column header.
     with manifest.open(newline="", encoding="utf-8-sig") as fh:
         return [(row["sha256"], row["family"]) for row in csv.DictReader(fh)]
 
@@ -101,41 +183,34 @@ def build_dataset(
     cache_dir: Path = _CACHE_DIR,
     max_oov_rate: float = _MAX_OOV_RATE,
     min_mapped: int = _MIN_MAPPED,
-    max_per_family: int | None = None,
     max_entropy: float | None = None,
+    manifest_name: str = "manifest.csv",
 ) -> dict[str, Dataset]:
-    """Assemble one :class:`Dataset` per architecture from all downloaded samples.
-
-    Samples that can't be parsed (Ghidra failure), whose architecture we don't
-    model, or that fail the quality gate (too packed / too little code recovered)
-    are logged and skipped. We added a max family to balance out the data despite
-    a balance being made
-    """
-    # accumulator, a dictionary keyed by architecture (architecture, hashes)
+    """Assemble one :class:`Dataset` per architecture from all downloaded samples."""
+    # Accumulator, a dictionary keyed by architecture (architecture, hashes)
     buckets: dict[str, tuple[list[np.ndarray], list[str], list[str]]] = {}
-    # To avoid leakage during the train/test split
+    # To avoid leakage/duplicated samples during the train/test split
     seen: set[str] = set()
-    kept: dict[str, int] = {}  # usable samples kept per family, for max_per_family
-    rows = _read_manifest(samples_dir)
+    rows = _read_manifest(samples_dir, manifest_name)
     # progress to stdout (flush=True so it shows live during slow Ghidra parses)
     print(f"building dataset from {len(rows)} manifest rows...", flush=True)
     for i, (sha256, family) in enumerate(rows, 1):
         if sha256 in seen:
             continue
         seen.add(sha256)
-        # family cap: once a family has enough usable samples, skip the rest
-        if max_per_family is not None and kept.get(family, 0) >= max_per_family:
-            continue
-        path = samples_dir / family / f"{sha256}.bin"
-        if not path.is_file():
-            print(f"  [{i}/{len(rows)}] {sha256[:12]}.. skip: file not found", flush=True)
+        # We use malware type as the label, and ignore any family that isn't mapped.
+        category = FAMILY_TO_TYPE.get(family)
+        if category is None:
             continue
         cached = _cache_path(sha256, cache_dir).exists()
-        # filter to keep on the uncached and files whose entrepy is below the threshold
-        # (likely not packed)
-        if not cached and max_entropy is not None:
-            ent = _file_entropy(path)
-            if ent > max_entropy:
+        path = samples_dir / family / f"{sha256}.bin"
+
+        if not cached:
+            if not path.is_file():
+                print(f"  [{i}/{len(rows)}] {sha256[:12]}.. skip: not cached, no .bin", flush=True)
+                continue
+            # skip likely-packed files before paying for a Ghidra run
+            if max_entropy is not None and (ent := _file_entropy(path)) > max_entropy:
                 print(
                     f"  [{i}/{len(rows)}] {sha256[:12]}.. ({family}) "
                     f"skip: likely packed (entropy {ent:.2f})",
@@ -157,11 +232,10 @@ def build_dataset(
                 flush=True,
             )
             continue
-        vecs, fams, shas = buckets.setdefault(feats.arch, ([], [], []))
+        vecs, types, shas = buckets.setdefault(feats.arch, ([], [], []))
         vecs.append(feats.as_array())
-        fams.append(family)
+        types.append(category)
         shas.append(sha256)
-        kept[family] = kept.get(family, 0) + 1
         print(
             f"      -> {feats.arch}, {feats.num_functions} funcs, "
             f"{feats.mapped_instructions} mapped, {feats.oov_rate:.0%} OOV",
@@ -169,8 +243,8 @@ def build_dataset(
         )
 
     return {
-        arch: Dataset(arch, np.vstack(vecs), np.array(fams), shas)
-        for arch, (vecs, fams, shas) in buckets.items()
+        arch: Dataset(arch, np.vstack(vecs), np.array(types), shas)
+        for arch, (vecs, types, shas) in buckets.items()
     }
 
 
@@ -180,15 +254,15 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Build the per-arch feature datasets.")
     parser.add_argument(
-        "--max-per-family", type=int, default=None, help="cap usable samples per family"
+        "--max-entropy", type=float, default=None, help="skip files above this entropy (packed)"
     )
     parser.add_argument(
-        "--max-entropy", type=float, default=None, help="skip files above this entropy (packed)"
+        "--manifest", default="manifest.csv", help="manifest filename under data/samples/"
     )
     args = parser.parse_args()
 
     try:
-        datasets = build_dataset(max_per_family=args.max_per_family, max_entropy=args.max_entropy)
+        datasets = build_dataset(max_entropy=args.max_entropy, manifest_name=args.manifest)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         sys.exit(1)

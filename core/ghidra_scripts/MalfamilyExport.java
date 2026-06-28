@@ -20,9 +20,6 @@ import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionManager;
@@ -38,15 +35,13 @@ public class MalfamilyExport extends GhidraScript {
             return;
         }
         String outPath = getScriptArgs()[0];
-        String partPath = outPath + ".part";
         FunctionManager fm = currentProgram.getFunctionManager();
         Listing listing = currentProgram.getListing();
 
-        // Stream straight to disk as UTF-8: a binary with millions of instructions
-        // never has to fit in a single in-memory string (avoids OutOfMemoryError),
-        // and the charset is pinned to match parser.py's UTF-8 read.
+        // Write JSON payload directly to disk using UTF-8 encoding. 
+        // Enforces charset consistency with the reader implementation in parser.py.
         try (Writer w = new BufferedWriter(
-                new OutputStreamWriter(new FileOutputStream(partPath), StandardCharsets.UTF_8))) {
+                new OutputStreamWriter(new FileOutputStream(outPath), StandardCharsets.UTF_8))) {
             w.write("{");
             w.write("\"format\":" + js(currentProgram.getExecutableFormat()) + ",");
             w.write("\"processor\":" + js(currentProgram.getLanguage().getProcessor().toString()) + ",");
@@ -73,10 +68,6 @@ public class MalfamilyExport extends GhidraScript {
             }
             w.write("]}");
         }
-
-        // Publish atomically so parser.py only ever sees a fully-written file:
-        // a crash before this point leaves only the .part file, which it treats as having no output.
-        Files.move(Paths.get(partPath), Paths.get(outPath), StandardCopyOption.REPLACE_EXISTING);
         println("EXPORT-OK wrote JSON to " + outPath);
     }
 

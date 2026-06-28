@@ -1,11 +1,9 @@
-"""Binary front-end for malfamily (Ghidra-backed).
+"""Ghidra parser wrapper for PE, ELF, and Mach-O files.
 
-Turns a PE / ELF / Mach-O file into a uniform list of code *functions*, each
-carrying the mnemonics Ghidra decoded for it. We drive Ghidra in **headless**
-mode: a subprocess runs Ghidra's batch analyzer (``analyzeHeadless``) on the
-binary, our small Java export script (``ghidra_scripts/MalfamilyExport.java``)
-dumps every function's mnemonics to a temporary JSON file, and we read it back.
-
+Converts a binary into a list of functions and their assembly mnemonics.
+We run Ghidra in headless mode (`analyzeHeadless`) as a subprocess. The Java export
+script (`ghidra_scripts/MalfamilyExport.java`) dumps the mnemonics to a temporary
+JSON file, which this script reads back.
 
 Requirements (NOT pip-installable):
   * Ghidra 11+  -> set the ``GHIDRA_INSTALL_DIR`` environment variable.
@@ -16,12 +14,11 @@ Public API:
     parse(path) -> ParsedBinary
 """
 
-from __future__ import annotations  # for deferred annotation evaluation
+from __future__ import annotations
 
 import json
 import os
 import shutil
-import signal
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,9 +27,8 @@ from tempfile import TemporaryDirectory
 _SCRIPT_DIR = Path(__file__).resolve().parent / "ghidra_scripts"
 _SCRIPT_NAME = "MalfamilyExport.java"
 
-# FOr windows defender exclusion, since ghidra holds a sample of the data 
-# while processing, 
-# windows defender will activate if this line is not here
+# For Windows Defender exclusion: Ghidra holds a copy of the sample while
+# processing, which Defender will flag if this directory isn't excluded.
 _WORK_DIR = Path(__file__).resolve().parent.parent / "ghidra_work"
 
 
@@ -46,8 +42,7 @@ class Function:
     """just the function class representing a singular function from the binaries
     ghidra decoded and extracted the mnemonics from"""
 
-    name: str
-    # mostly for debugging
+    name: str  # Debugging information
 
     va: int
     mnemonics: list[str]
@@ -89,28 +84,10 @@ def _format_of(fmt: str) -> str:
         return "macho"
     if "elf" in f:
         return "elf"
+
     if "portable executable" in f or "(pe)" in f:
         return "pe"
     return f
-
-
-def build_parsed_binary(data: dict) -> ParsedBinary:
-    """Turn the export script's JSON into a :class:`ParsedBinary`.
-
-    Kept separate from the parsing function below so that we can test on ghidra
-    exports without needing ghidra 12 or java (Ive had dependencies issues on
-    another laptop).
-    """
-    arch = _arch_of(data["processor"], int(data["ptr_bytes"]))
-    functions = [
-        Function(
-            name=fn["name"],
-            va=int(fn["va"]),  # mostly for debugging
-            mnemonics=[m.lower() for m in fn["mnemonics"]],
-        )
-        for fn in data["functions"]
-    ]
-    return ParsedBinary(format=_format_of(data["format"]), arch=arch, functions=functions)
 
 
 def _ghidra_dir() -> Path:
@@ -128,22 +105,33 @@ def _ghidra_dir() -> Path:
     return p
 
 
-def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
-    """kill headless launcher AND its child JVM on timeout (which would leak if not done)."""
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill the Ghidra subprocess *and* its child JVM.
+
+    On Windows, regular proc.kill() only stops the CMD window, leaving Java running.
+    This Java process keeps holding onto a lock file in our temporary folder,
+    which crashes Python when it tries to clean up. To fix this, 
+    we kill the whole process tree (taskkill /T) to unlock the file.
+    """
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    proc.kill()
     try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
-        else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # type: ignore[attr-defined]
-    except Exception:
-        proc.kill()
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def parse(path: str | Path, analysis_timeout: int = 180) -> ParsedBinary:
     """Parse a PE / ELF / Mach-O binary into a :class:`ParsedBinary`.
 
-    ``analysis_timeout`` bounds Ghidra's auto-analysis per file (seconds).
-    this timout time can change depending on the database behavior
+    Time limit for Ghidra to analyze a file (seconds).
+    Might need to increase this if the disk/database is slow.
     """
     path = Path(path)
     if not path.is_file():
@@ -152,13 +140,17 @@ def parse(path: str | Path, analysis_timeout: int = 180) -> ParsedBinary:
     ghidra = _ghidra_dir()
     headless = (
         ghidra / "support" / ("analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless")
-    )  # I have a windows laptop but my schools pcs run on linux
+    )  # Linux and Windows support
 
-    # this was a clever way to delete the remaining files I didnt need from ghidra
-    # (logs) as they piled up
+    # Temporary Ghidra files handler, avoid keeping unecessary files
     _WORK_DIR.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="malfamily_ghidra_", dir=_WORK_DIR) as tmp:
-        # Import a copy under a fixed, safe name: the original (attacker-controlled)
+    # ignore_cleanup_errors: If Ghidra times out, it might still lock the project files 
+    # for a moment. We ignore cleanup errors so this timing issue doesn't crash the whole 
+    # batch. The leftovers will get cleaned up on the next run anyway.
+    with TemporaryDirectory(
+        prefix="malfamily_ghidra_", dir=_WORK_DIR, ignore_cleanup_errors=True
+    ) as tmp:
+        # Import a copy under a fixed, safe name: the original
         # filename never reaches the command line, so it can't inject shell metacharacters.
         sample = Path(tmp) / "sample.bin"
         shutil.copyfile(path, sample)
@@ -173,51 +165,53 @@ def parse(path: str | Path, analysis_timeout: int = 180) -> ParsedBinary:
             "-import",
             str(sample),  # loading a safe-named copy of the malware binary
             "-scriptPath",
-            str(_SCRIPT_DIR),  # run our java script
+            str(_SCRIPT_DIR),
             "-postScript",
             _SCRIPT_NAME,
             str(out_json),
-            "-deleteProject",  # delete the temp ghidra database
-            "-analysisTimeoutPerFile",  # to avoid getting stuck
+            "-deleteProject",
+            "-analysisTimeoutPerFile",
             str(analysis_timeout),
         ]
-        # ive found that sometimes running batch commands in a python file can be unreliable
+
         cmd = ["cmd", "/c", *headless_args] if os.name == "nt" else headless_args
 
-        # Own process group so a timeout can take down the child JVM too, not just the launcher.
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,  # so ghidra's .bat "pause" on error gets EOF
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=(os.name != "nt"),
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),  # windows only
+            # Read results only from out_json. Piping stdout/stderr crashed on Windows because 
+            # Python tried to decode Ghidra's output using the default cp1252 encoding and failed. 
+            # Sending output to DEVNULL completely avoids this decoding error.  
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        # the +300 is a buffer, ghidra burns time booting the jvm before analysis even starts
+        # the +300 is a buffer: ghidra burns time booting the JVM before analysis starts
         try:
-            stdout, stderr = proc.communicate(timeout=analysis_timeout + 300)
+            proc.communicate(timeout=analysis_timeout + 300)
         except subprocess.TimeoutExpired as e:
-            _kill_process_tree(proc)
-            stdout, stderr = proc.communicate()  # drain whatever ghidra logged so far
-            tail = ((stdout or "") + (stderr or ""))[-1500:]  # shows where it got stuck
-            raise GhidraError(
-                f"Ghidra timed out on {path.name} after {analysis_timeout + 300}s\n"
-                f"--- last Ghidra output before kill ---\n{tail}"
-            ) from e
+            _kill_tree(proc)  # kill the child JVM too, or it locks the temp dir
+            raise GhidraError(f"Ghidra timed out on {path.name}") from e
 
         if not out_json.exists():
-            tail = ((stdout or "") + (stderr or ""))[-2000:]  # to make sure we REALLY get the error
-            raise GhidraError(
-                f"Ghidra produced no output for {path.name} (exit {proc.returncode}).\n"
-                f"--- last lines of Ghidra output ---\n{tail}"
-            )
+            raise GhidraError(f"Ghidra produced no output for {path.name} (exit {proc.returncode})")
         try:
             data = json.loads(out_json.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:  # a crash mid-write leaves truncated JSON
+        except json.JSONDecodeError as e:
             raise GhidraError(f"Ghidra wrote corrupt JSON for {path.name}: {e}") from e
 
-    return build_parsed_binary(data)
+
+
+
+    arch = _arch_of(data["processor"], int(data["ptr_bytes"]))
+    functions = [
+        Function(
+            name=fn["name"],
+            va=int(fn["va"]),
+            mnemonics=[m.lower() for m in fn["mnemonics"]],
+        )
+        for fn in data["functions"]
+    ]
+    return ParsedBinary(format=_format_of(data["format"]), arch=arch, functions=functions)
 
 
 if __name__ == "__main__":

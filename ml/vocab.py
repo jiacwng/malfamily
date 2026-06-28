@@ -24,7 +24,7 @@ from pathlib import Path
 
 _JSON_PATH = Path(__file__).resolve().parent.parent / "common" / "categories.json"
 
-# 32 and 64bit architectures share roughly the same mnomonics used for arithmetics/crypto
+
 _ARCH_TO_KEY = {"x86": "x86", "x86-64": "x86", "arm64": "arm64"}
 
 
@@ -35,12 +35,7 @@ def _raw() -> dict:
         return json.load(fh)
 
 
-def architectures() -> tuple[str, ...]:
-    """The architecture keys in the JSON, e.g. ``("x86", "arm64")``."""
-    return tuple(k for k in _raw() if not k.startswith("_"))  # filters out metadata
-
-
-@dataclass(frozen=True)  # This way we can't accidentally change the vocab at runtime
+@dataclass
 class Vocab:
     """The dictionary for ONE architecture at a time only"""
 
@@ -55,16 +50,11 @@ class Vocab:
         return len(self.roots)
 
     @property
-    def num_categories(self) -> int:
-        return len(self.categories)
-
-    @property
     def category_names(self) -> tuple[str, ...]:
         return tuple(self.categories)
 
 
-# cache per resolved arch so we don't rebuild the lookup dicts on every call.
-# (x86 and x86-64 cache as two identical entries -- a negligible duplicate.)
+# Cache the vocab per architecture so we don't rebuild the lookup dicts every time.
 @lru_cache(maxsize=None)
 def load(arch: str) -> Vocab:
     """Load the :class:`Vocab` for a parser arch string or a raw vocab key."""
@@ -72,7 +62,7 @@ def load(arch: str) -> Vocab:
     data = _raw()
     if key not in data:
         available = sorted(k for k in data if not k.startswith("_"))
-        # a bin from an arch we don't model (e.g. MIPS) lands here
+        # a binary from an arch we don't model lands here
         raise ValueError(f"no vocabulary for {key!r}; available: {available}")
 
     categories: dict[str, tuple[str, ...]] = {}
@@ -99,11 +89,3 @@ def load(arch: str) -> Vocab:
         root_index={root: i for i, root in enumerate(roots)},
         root_to_category=root_to_category,
     )
-
-
-if __name__ == "__main__":
-    for key in architectures():
-        v = load(key)
-        print(f"[{key}] categories={v.num_categories} roots={v.num_roots}")
-        for cat in v.category_names:
-            print(f"    {cat:18s} {len(v.categories[cat]):3d}")

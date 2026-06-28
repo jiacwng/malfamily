@@ -22,12 +22,6 @@ def _model_path(arch: str) -> Path:
     return _MODEL_DIR / f"model_{arch}.pkl"
 
 
-def _trainable(ds: Dataset) -> bool:
-    """Need >=2 families to classify between; the stratified-split edge cases (a
-    family too small to split) are caught by the try/except around train()."""
-    return len(set(ds.y.tolist())) >= 2
-
-
 def _print_report(arch: str, ds: Dataset, report: EvalReport) -> None:
     print(f"\n=== {arch}: {ds.X.shape[0]} samples x {ds.X.shape[1]} features ===")
     for fam, n in sorted(Counter(ds.y.tolist()).items()):
@@ -44,8 +38,8 @@ def _print_report(arch: str, ds: Dataset, report: EvalReport) -> None:
     for i, lab in enumerate(report.labels):
         cells = "".join(f"{int(report.confusion[i, j]):>9d}" for j in range(len(report.labels)))
         print(f"    {lab[:16]:16s}{cells}")
-    # calibration: predict-time low-confidence cutoff comes from where accuracy
-    # falls off as the decision margin (p1-p2) shrinks.
+    # check at what margin (p1-p2) our accuracy starts dropping,
+    # which helps us set the threshold for the low-confidence flag.
     print("  margin calibration (accuracy by decision margin p1-p2):")
     for lo, hi in ((0.0, 0.1), (0.1, 0.25), (0.25, 1.01)):
         mask = (report.margins >= lo) & (report.margins < hi)
@@ -55,21 +49,18 @@ def _print_report(arch: str, ds: Dataset, report: EvalReport) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train per-arch malware-family classifiers.")
+    parser = argparse.ArgumentParser(description="Train per-arch malware-type classifiers.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
-        "--max-per-family", type=int, default=None, help="cap usable samples per family"
+        "--max-entropy", type=float, default=None, help="skip files above this entropy (packed)"
     )
     parser.add_argument(
-        "--max-entropy", type=float, default=None, help="skip files above this entropy (packed)"
+        "--manifest", default="manifest.csv", help="manifest filename under data/samples/"
     )
     args = parser.parse_args()
 
     try:
-        datasets = build_dataset(
-            max_per_family=args.max_per_family,
-            max_entropy=args.max_entropy,
-        )
+        datasets = build_dataset(max_entropy=args.max_entropy, manifest_name=args.manifest)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         sys.exit(1)
@@ -78,11 +69,7 @@ def main() -> None:
         sys.exit(1)
 
     for arch, ds in sorted(datasets.items()):
-        if not _trainable(ds):
-            print(f"\n=== {arch}: {ds.X.shape[0]} samples -- too few per family, skipping ===")
-            continue
-        # train_test_split can still reject tiny sets (test fold too small for the
-        # number of families);
+        
         try:
             model, report = classifier.train(ds.X, ds.y, seed=args.seed)
         except ValueError as e:

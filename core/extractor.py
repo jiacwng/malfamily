@@ -1,10 +1,11 @@
 """Turn a parsed binary into a fixed-length numeric feature vector.
 
 This is same idea as the feature extractor from mnemocrypt, but here we use
-normalized stats and we completely skip raw counts.
+normalized stats too.
 so that a 50-function utility and a 5000-function packer are comparable. We normalize by
-the number of *modeled* instructions and carry the out-of-vocabulary rate as its
-own feature (a high OOV rate is itself a packing/obfuscation signal).
+the number of *modeled* instructions and track the out-of-vocabulary rate as a diagnostic
+that the quality gate uses to drop or abstain on unreadable files (a high OOV rate is one
+weak, ambiguous hint that the disassembly may be unreliable).
 
     mnemonic  --(longest-prefix match)-->  root  --(vocab)-->  category
     counts -> normalized histograms (root-level + category-level)
@@ -27,21 +28,21 @@ class ExtractorError(RuntimeError):
     architecture we don't have a vocabulary for)."""
 
 
-@dataclass(frozen=True)
+@dataclass
 class Features:
-    """Per-binary feature vector, ``root_vector`` and ``category_vector`` are
-    normalized frequency histograms in the vocab's fixed column order, so the same
-    column always means the same root/category across every sample of an architecture.
-    """
+    """Feature vector for a single binary.
 
+    The vectors are normalized histograms of instruction frequencies in a fixed order,
+    so the columns line up perfectly across all samples.
+    """
     arch: str
     root_vector: tuple[float, ...]
     category_vector: tuple[float, ...]
-    # diagnostics, also usable as features by the trainer
+    # diagnostics used by the quality gate; NOT part of as_array (the model never sees them)
     total_instructions: int
     mapped_instructions: int  # instructions that matched a root
-    # oov = out of vocabulary, rate of instructions whose mnemonic didn't match
-    # any root in our vocab, closer to 1 = likely packed, obfuscated
+    # oov = out of vocabulary, rate of instructions whose mnemonic didn't match any root.
+    # A high rate can hint at packing/obfuscation, but it is ambiguous on its own.
     oov_rate: float
     num_functions: int
 
@@ -56,11 +57,11 @@ def _root_of(mnemonic: str, roots: frozenset[str]) -> str | None:
     if mnemonic in roots:
         return mnemonic
 
-    # arm conditional branches (b.eq, b.ne, ...) gather on b.cond root
+    # group ARM branches (b.eq, b.ne, etc.) under the b.cond root
     if "b.cond" in roots and mnemonic.startswith("b."):
         return "b.cond"
 
-    # for prefix match, we shrink the mnemonic one chat a time from the end and
+    # For prefix match, we shrink the mnemonic one char at a time from the end and
     # return the first prefix that is detected
     for end in range(len(mnemonic) - 1, 0, -1):
         prefix = mnemonic[:end]
@@ -74,8 +75,8 @@ def _count_roots(parsed: ParsedBinary, roots: frozenset[str]) -> tuple[dict[str,
     counts: dict[str, int] = {}
     # cache/memoization for the _root_of func
     cache: dict[str, str | None] = {}
-    total = 0  # for the denominator of the histogram
-    mapped = 0  # for the oov ratio
+    total = 0
+    mapped = 0
     for fn in parsed.functions:
         for mnemonic in fn.mnemonics:
             total += 1
@@ -84,7 +85,7 @@ def _count_roots(parsed: ParsedBinary, roots: frozenset[str]) -> tuple[dict[str,
             else:
                 root = _root_of(mnemonic, roots)
                 cache[mnemonic] = root
-            if root is None:  # skips directly to the next mnomonic
+            if root is None:
                 continue
             mapped += 1
             counts[root] = counts.get(root, 0) + 1
@@ -118,11 +119,11 @@ def _vectorize(
 def extract(parsed: ParsedBinary) -> Features:
     """Turn a :class:`ParsedBinary` into a :class:`Features` vector."""
 
-    # Error handling for unsuported architecture
+    # Error handling for unsupported architecture
     if parsed.arch.startswith("unsupported:"):
         raise ExtractorError(f"no feature vocabulary for unsupported arch {parsed.arch!r}")
     try:
-        v = vocab.load(parsed.arch)  # resolves x86-64 -> x86 internally
+        v = vocab.load(parsed.arch)  # Map x86-64 to x86 so they share the same vocab.
     except ValueError as e:
         raise ExtractorError(str(e)) from e
 
@@ -133,7 +134,7 @@ def extract(parsed: ParsedBinary) -> Features:
     root_vector, category_vector = _vectorize(counts, mapped, v)
 
     # total == 0 means an empty binary (no instructions at all), so OOV is
-    # undefined -> report 0.0 rather than dividing by zero.
+    # undefined, so we report 0.0 rather than dividing by zero.
     oov_rate = 0.0 if total == 0 else 1.0 - mapped / total
 
     return Features(
