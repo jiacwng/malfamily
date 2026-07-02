@@ -50,6 +50,4 @@ htmlcov/
 Thumbs.db
 .idea/
 .vscode/
-NOTES.md
-old_read_me.md
-data/results_unbalanced_6type.md
+*.local.md
