@@ -173,7 +173,7 @@ def _read_manifest(samples_dir: Path, manifest_name: str = "manifest.csv") -> li
     manifest = samples_dir / manifest_name
     if not manifest.exists():
         raise FileNotFoundError(
-            f"no manifest at {manifest} (it ships with the repo alongside the feature cache)"
+            f"no manifest at {manifest} (it ships with the repo alongside the feature bundle)"
         )
     # Use utf-8-sig so hidden formatting characters
     # from Excel/PowerShell CSVs don't mess up the first column header.
